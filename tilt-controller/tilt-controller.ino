@@ -37,9 +37,9 @@ volatile uint8_t CACHE_OCR2A = 0;
 uint8_t *VAL_RC_TILT = &CACHE_OCR2A;
 
 void setup() {
-  pinMode(2, INPUT);
-  pinMode(3, INPUT);
-  pinMode(8, INPUT);
+  pinMode(2, INPUT_PULLUP);
+  pinMode(3, INPUT_PULLUP);
+  pinMode(A0, INPUT_PULLUP);
   
   pinMode(LED_BUILTIN, OUTPUT);     // LED Pin
   pinMode(PIN_RC_THROTTLE, OUTPUT);
