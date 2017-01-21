@@ -91,9 +91,8 @@ void writeThrottlePosition(uint16_t thr_in, uint16_t tilt) {
 
 uint8_t itr = 0;
 void loop() {
-
   // Interrupt-safe reading.
-  cei();
+  cli();
   uint16_t inp_pitch = RC_VAL[RCI_PITCH];
   uint16_t inp_throttle = RC_VAL[RCI_THROTTLE];
   uint16_t inp_mode = RC_VAL[RCI_MODE];
@@ -108,13 +107,19 @@ void loop() {
     mode = MODE_VARIABLE;
   }
 
-  // Check the watchdog for loss of signal:
+
+  // Check the watchdog for loss of signal, in an interrupt-safe manner:
+  cli();
   if (updateWatchdog > WATCHDOG_TRIGGER) {
+    updateWatchdog = WATCHDOG_TRIGGER;
+    sei();
+
     *VAL_RC_THROTTLE = 0;
     // Reset the watchdog to prevent integer overflow.
-    updateWatchdog = WATCHDOG_TRIGGER;
 
   } else {
+    sei();
+
     // Use the mode to set the output values.
     switch(mode){
       default:
@@ -159,9 +164,9 @@ void setupInterrupts() {
   EICRA  = EICRA  & ~_BV(ISC11) | _BV(ISC10) & ~_BV(ISC01) | _BV(ISC00);
   EIMSK  = EIMSK  |  _BV(INT1)  | _BV(INT0); 
   
-  // Enable external interrupt on Arduino pin 8, as part of the pin bank.
-  PCICR  = PCICR  | _BV(PCIE0);
-  PCMSK0 = PCMSK0 | _BV(PCINT0);
+  // Enable external interrupt on Arduino pin 8, as part of the pin bank C.
+  PCICR  = PCICR  | _BV(PCIE1);
+  PCMSK1 = PCMSK1 | _BV(PCINT8);
 
   // Set up Timer1 for RC output. 
   // We put it in Phase and Frequency Correct Mode, with TOP at ICR1 and OCR1x updated at BOTTOM
@@ -244,8 +249,8 @@ inline void intHandler(bool pinState, uint8_t rcIdx) {
 } 
 
 // Handle the entire pin bank 0
-ISR(PCINT0_vect) {
-  intHandler(PINB & _BV(PINB0), RCI_MODE);
+ISR(PCINT1_vect) {
+  intHandler(PINC & _BV(PINC0), RCI_MODE);
 }
 
 // Handle pin 2
