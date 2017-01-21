@@ -91,10 +91,18 @@ void writeThrottlePosition(uint16_t thr_in, uint16_t tilt) {
 
 uint8_t itr = 0;
 void loop() {
+
+  // Interrupt-safe reading.
+  cei();
+  uint16_t inp_pitch = RC_VAL[RCI_PITCH];
+  uint16_t inp_throttle = RC_VAL[RCI_THROTTLE];
+  uint16_t inp_mode = RC_VAL[RCI_MODE];
+  sei();
+
   // Update current mode.
-  if(RC_VAL[RCI_MODE] < 1250) {
+  if(inp_mode < 1250) {
     mode = MODE_DISABLE;
-  } else if(RC_VAL[RCI_MODE] < 1750) {
+  } else if(inp_mode < 1750) {
     mode = MODE_FIXED;
   } else {
     mode = MODE_VARIABLE;
@@ -112,26 +120,25 @@ void loop() {
       default:
       case MODE_DISABLE:
         writeTiltPosition(1500);
-        *VAL_RC_PITCH = RC_VAL[RCI_PITCH];
-        *VAL_RC_THROTTLE = RC_VAL[RCI_THROTTLE];
+        *VAL_RC_PITCH = inp_pitch;
+        *VAL_RC_THROTTLE = inp_throttle;
 
         // Blink based on mode
         digitalWrite(LED_BUILTIN, LOW);
         break;
       case MODE_FIXED:
         writeTiltPosition(FIXED_TILT);
-        *VAL_RC_PITCH = RC_VAL[RCI_PITCH];
-        writeThrottlePosition(RC_VAL[RCI_THROTTLE], FIXED_TILT);
+        *VAL_RC_PITCH = inp_pitch;
+        writeThrottlePosition(inp_throttle, FIXED_TILT);
 
         // Blink based on mode
         digitalWrite(LED_BUILTIN, HIGH);
         break;
       case MODE_VARIABLE:
         
-        writeTiltPosition(RC_VAL[RCI_PITCH]);
-        // *VAL_RC_TILT = RC_VAL[RCI_PITCH];
+        writeTiltPosition(inp_pitch);
         *VAL_RC_PITCH = 1500;
-        writeThrottlePosition(RC_VAL[RCI_THROTTLE], FIXED_PITCH);
+        writeThrottlePosition(inp_throttle, inp_pitch);
         
         // Blink based on mode
         digitalWrite(LED_BUILTIN, (itr & 0b00001000)?HIGH:LOW);
