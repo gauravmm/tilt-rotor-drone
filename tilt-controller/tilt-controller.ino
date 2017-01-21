@@ -32,7 +32,7 @@ uint8_t mode = MODE_DISABLE;
 volatile uint16_t *VAL_RC_THROTTLE = OCR1A;
 #define PIN_RC_PITCH    10
 volatile uint16_t *VAL_RC_PITCH = OCR1B;
-#define PIN_RC_TILT     15
+#define PIN_RC_TILT     11
 volatile uint8_t CACHE_OCR2A = 0;
 uint8_t *VAL_RC_TILT = &CACHE_OCR2A;
 
@@ -49,7 +49,8 @@ void setup() {
   setupInterrupts();
 }
 
-void writeTiltPosition(uint16_t tilt) {
+// Write output values
+inline void writeTiltPosition(uint16_t tilt) {
   // 0..4.080ms = 0..255
   // 1..2ms ~= 63..125
   // .: [1000..2000] -> [63..125]
@@ -62,8 +63,15 @@ void writeTiltPosition(uint16_t tilt) {
     CACHE_OCR2A = (tilt - 1000) / 16 + 63;
   }
 }
+inline void writePitchPosition(uint16_t pitch) {
+  OCR1B = pitch;
+}
+inline void writeThrottlePosition(uint16_t thr) {
+  OCR1A = thr;
+}
 
-void writeThrottlePosition(uint16_t thr_in, uint16_t tilt) {
+// Calculate throttle position given angle.
+void calcThrottlePosition(uint16_t thr_in, uint16_t tilt) {
   // First we express the tilt angle as a fraction between 
   float angle = 0.0;
   if (tilt <= 1000) {
@@ -86,7 +94,7 @@ void writeThrottlePosition(uint16_t thr_in, uint16_t tilt) {
     thrust_val = 500;
   }
 
-  *VAL_RC_THROTTLE = 1500 + thrust_val; 
+  writeThrottlePosition(1500 + thrust_val); 
 }
 
 uint8_t itr = 0;
@@ -111,11 +119,14 @@ void loop() {
   // Check the watchdog for loss of signal, in an interrupt-safe manner:
   cli();
   if (updateWatchdog > WATCHDOG_TRIGGER) {
+    // Reset the watchdog to prevent integer overflow.
     updateWatchdog = WATCHDOG_TRIGGER;
     sei();
 
-    *VAL_RC_THROTTLE = 0;
-    // Reset the watchdog to prevent integer overflow.
+    OCR1A = 0;
+    OCR1B = 0;
+    CACHE_OCR2A = 0;
+    OCR2A = 0;
 
   } else {
     sei();
@@ -125,28 +136,26 @@ void loop() {
       default:
       case MODE_DISABLE:
         writeTiltPosition(1500);
-        *VAL_RC_PITCH = inp_pitch;
-        *VAL_RC_THROTTLE = inp_throttle;
-
+        writePitchPosition(inp_pitch);
+        writeThrottlePosition(inp_throttle);
         // Blink based on mode
         digitalWrite(LED_BUILTIN, LOW);
         break;
+
       case MODE_FIXED:
         writeTiltPosition(FIXED_TILT);
-        *VAL_RC_PITCH = inp_pitch;
-        writeThrottlePosition(inp_throttle, FIXED_TILT);
-
+        writePitchPosition(inp_pitch);
+        calcThrottlePosition(inp_throttle, FIXED_TILT);
         // Blink based on mode
         digitalWrite(LED_BUILTIN, HIGH);
         break;
+
       case MODE_VARIABLE:
-        
         writeTiltPosition(inp_pitch);
-        *VAL_RC_PITCH = 1500;
-        writeThrottlePosition(inp_throttle, inp_pitch);
-        
+        writePitchPosition(1500);
+        calcThrottlePosition(inp_throttle, inp_pitch);
         // Blink based on mode
-        digitalWrite(LED_BUILTIN, (itr & 0b00001000)?HIGH:LOW);
+        digitalWrite(LED_BUILTIN, (itr & 0b00010100)?HIGH:LOW);
         break;
     }
   }
