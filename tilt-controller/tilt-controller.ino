@@ -6,7 +6,7 @@
 // and passes on the modified input to the flight controller. 
 
 // The pitch used in MODE_FIXED, as the motor fraction.
-#define FIXED_PITCH 1600
+#define FIXED_TILT 1600
 
 #define RCI_THROTTLE 0
 #define RCI_PITCH    1
@@ -29,23 +29,41 @@ uint8_t mode = MODE_DISABLE;
 
 // Output pins are OC1A and OC1B
 #define PIN_RC_THROTTLE 9
-uint16_t *VAL_RC_THROTTLE = OCR1A;
+volatile uint16_t *VAL_RC_THROTTLE = OCR1A;
 #define PIN_RC_PITCH    10
-uint16_t *VAL_RC_PITCH = OCR1B;
+volatile uint16_t *VAL_RC_PITCH = OCR1B;
 #define PIN_RC_TILT     15
-uint16_t *VAL_RC_TILT = 0;
+volatile uint8_t CACHE_OCR2A = 0;
+uint8_t *VAL_RC_TILT = &CACHE_OCR2A;
 
 void setup() {
-  // initialize digital pin LED_BUILTIN as an output.
-  pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(2, INPUT);
+  pinMode(3, INPUT);
+  pinMode(8, INPUT);
+  
+  pinMode(LED_BUILTIN, OUTPUT);     // LED Pin
   pinMode(PIN_RC_THROTTLE, OUTPUT);
   pinMode(PIN_RC_PITCH, OUTPUT);
-  // Serial.begin(115200);
-
+  pinMode(PIN_RC_TILT, OUTPUT);
+  
   setupInterrupts();
 }
 
-void writeThrottlePosition(uint16_t* thr_out, uint16_t thr_in, uint16_t tilt) {
+void writeTiltPosition(uint16_t tilt) {
+  // 0..4.080ms = 0..255
+  // 1..2ms ~= 63..125
+  // .: [1000..2000] -> [63..125]
+  if (tilt <= 1000) {
+    CACHE_OCR2A = 62;
+  } else if (tilt >= 2000) {
+    CACHE_OCR2A = 125;
+  } else {
+    // Map the input from domain [1000..2000] to range [63..125]; 
+    CACHE_OCR2A = (tilt - 1000) / 16 + 63;
+  }
+}
+
+void writeThrottlePosition(uint16_t thr_in, uint16_t tilt) {
   // First we express the tilt angle as a fraction between 
   float angle = 0.0;
   if (tilt <= 1000) {
@@ -68,7 +86,7 @@ void writeThrottlePosition(uint16_t* thr_out, uint16_t thr_in, uint16_t tilt) {
     thrust_val = 500;
   }
 
-  *thr_out = 1500 + thrust_val; 
+  *VAL_RC_THROTTLE = 1500 + thrust_val; 
 }
 
 uint8_t itr = 0;
@@ -93,6 +111,7 @@ void loop() {
     switch(mode){
       default:
       case MODE_DISABLE:
+        writeTiltPosition(1500);
         *VAL_RC_PITCH = RC_VAL[RCI_PITCH];
         *VAL_RC_THROTTLE = RC_VAL[RCI_THROTTLE];
 
@@ -100,30 +119,25 @@ void loop() {
         digitalWrite(LED_BUILTIN, LOW);
         break;
       case MODE_FIXED:
-        *VAL_RC_TILT = FIXED_PITCH;
+        writeTiltPosition(FIXED_TILT);
         *VAL_RC_PITCH = RC_VAL[RCI_PITCH];
-        writeThrottlePosition(VAL_RC_THROTTLE, RC_VAL[RCI_THROTTLE], FIXED_PITCH);
+        writeThrottlePosition(RC_VAL[RCI_THROTTLE], FIXED_TILT);
 
         // Blink based on mode
         digitalWrite(LED_BUILTIN, HIGH);
         break;
       case MODE_VARIABLE:
-        *VAL_RC_TILT = RC_VAL[RCI_PITCH];
+        
+        writeTiltPosition(RC_VAL[RCI_PITCH]);
+        // *VAL_RC_TILT = RC_VAL[RCI_PITCH];
         *VAL_RC_PITCH = 1500;
-        writeThrottlePosition(VAL_RC_THROTTLE, RC_VAL[RCI_THROTTLE], FIXED_PITCH);
+        writeThrottlePosition(RC_VAL[RCI_THROTTLE], FIXED_PITCH);
         
         // Blink based on mode
         digitalWrite(LED_BUILTIN, (itr & 0b00001000)?HIGH:LOW);
         break;
     }
   }
-  
-  /*
-  Serial.println(RC_VAL[0]);
-  Serial.println(RC_VAL[1]);
-  Serial.println(RC_VAL[2]);
-  Serial.println();
-  */
 
   updateWatchdog++;
   itr++;
@@ -131,9 +145,6 @@ void loop() {
 }
 
 void setupInterrupts() {
-  pinMode(2, INPUT);
-  pinMode(3, INPUT);
-  pinMode(8, INPUT);
   // Prevent interrupts from being handled while in an inconsistent state.
   cli();
   // Enable external interrupt on Arduino pins 2, 3
@@ -145,7 +156,7 @@ void setupInterrupts() {
   PCICR  = PCICR  | _BV(PCIE0);
   PCMSK0 = PCMSK0 | _BV(PCINT0);
 
-  // Set up Timer1 for servo output. 
+  // Set up Timer1 for RC output. 
   // We put it in Phase and Frequency Correct Mode, with TOP at ICR1 and OCR1x updated at BOTTOM
   // This way, we can set the same TOP value for both OC1[A:B], and change the pulse width using
   // OCR1[A:B] independently. 
@@ -179,7 +190,27 @@ void setupInterrupts() {
   OCR1A = 0;
   OCR1B = 0;
 
+  // Set up Timer2 for Servo output.
+  // We can afford lower precision on the servo, so we use the 8-bit timer.
+
+  // Set Phase Correct Mode 
+  TCCR2A = TCCR2A & ~_BV(WGM21) | _BV(WGM20);
+  TCCR2B = TCCR2B & ~_BV(WGM22);
+
+  // Set /128 prescaler, so one timer period is 4.08ms
+  TCCR2B = TCCR2B | _BV(CS22) & ~_BV(CS21) | _BV(CS20);
+
+  // Set non-inverting output.
+  TCCR2A = TCCR2A | _BV(COM2A1) & ~_BV(COM2A0);
+
+  OCR2A = 0;
+
   sei();
+}
+
+// Update OCR2A from CACHE_OCR2A at the bottom, so we never miss a comparison.
+ISR(TIMER2_OVF_vect) {
+  OCR2A = CACHE_OCR2A;
 }
 
 inline void intHandler(bool pinState, uint8_t rcIdx) {
