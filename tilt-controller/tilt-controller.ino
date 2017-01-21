@@ -5,39 +5,129 @@
 // from the RC receiver. It modifies the input, controls the tilt of the servo,
 // and passes on the modified input to the flight controller. 
 
+// The pitch used in MODE_FIXED, as the motor fraction.
+#define FIXED_PITCH 1600
+
 #define RCI_THROTTLE 0
 #define RCI_PITCH    1
 #define RCI_MODE     2
 
-unsigned long volatile RC_START_TIME[3];
-unsigned long volatile RC_VAL[3];
+#define MODE_DISABLE  0
+#define MODE_FIXED    1
+#define MODE_VARIABLE 2
+
+#define WATCHDOG_TRIGGER 31
+// The real-world tilt angle corresponding to maximum input value via the RC:
+#define TILT_ANGLE   3.14159265/4 /* rad */
+
+volatile unsigned long RC_START_TIME[3];
+volatile unsigned long RC_VAL[3];
+
+// This watchdog allows us to check if no pulses are detected on the RC input. 
+volatile uint8_t updateWatchdog = 0;
+uint8_t mode = MODE_DISABLE;
 
 // Output pins are OC1A and OC1B
 #define PIN_RC_THROTTLE 9
+uint16_t *VAL_RC_THROTTLE = OCR1A;
 #define PIN_RC_PITCH    10
+uint16_t *VAL_RC_PITCH = OCR1B;
+#define PIN_RC_TILT     15
+uint16_t *VAL_RC_TILT = 0;
 
 void setup() {
   // initialize digital pin LED_BUILTIN as an output.
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(PIN_RC_THROTTLE, OUTPUT);
   pinMode(PIN_RC_PITCH, OUTPUT);
-
-  Serial.begin(115200);
+  // Serial.begin(115200);
 
   setupInterrupts();
 }
 
-// the loop function runs over and over again forever
-void loop() {
-  digitalWrite(LED_BUILTIN, HIGH);
-  delay(50);
-  digitalWrite(LED_BUILTIN, LOW);
-  delay(50);
+void writeThrottlePosition(uint16_t* thr_out, uint16_t thr_in, uint16_t tilt) {
+  // First we express the tilt angle as a fraction between 
+  float angle = 0.0;
+  if (tilt <= 1000) {
+    angle = -TILT_ANGLE;
+  } else if (tilt >= 2000) {
+    angle = TILT_ANGLE;
+  } else {
+    angle = (tilt-1500) * TILT_ANGLE / 500;
+  }
 
+  // We compensate for the loss of upward force (lift) due to the change in thrust vector 
+  // direction by increasing the thrust to keep the lift constant. The excess thrust, thanks
+  // to the tilting motors, goes into forward movement of the drone. 
+  int16_t thrust_val = thr_in - 1500;
+  thrust_val = thrust_val / cos(angle);
+  
+  if (thrust_val <= -500) {
+    thrust_val = -500;
+  } else if (thrust_val >= 500) {
+    thrust_val = 500;
+  }
+
+  *thr_out = 1500 + thrust_val; 
+}
+
+uint8_t itr = 0;
+void loop() {
+  // Update current mode.
+  if(RC_VAL[RCI_MODE] < 1250) {
+    mode = MODE_DISABLE;
+  } else if(RC_VAL[RCI_MODE] < 1750) {
+    mode = MODE_FIXED;
+  } else {
+    mode = MODE_VARIABLE;
+  }
+
+  // Check the watchdog for loss of signal:
+  if (updateWatchdog > WATCHDOG_TRIGGER) {
+    *VAL_RC_THROTTLE = 0;
+    // Reset the watchdog to prevent integer overflow.
+    updateWatchdog = WATCHDOG_TRIGGER;
+
+  } else {
+    // Use the mode to set the output values.
+    switch(mode){
+      default:
+      case MODE_DISABLE:
+        *VAL_RC_PITCH = RC_VAL[RCI_PITCH];
+        *VAL_RC_THROTTLE = RC_VAL[RCI_THROTTLE];
+
+        // Blink based on mode
+        digitalWrite(LED_BUILTIN, LOW);
+        break;
+      case MODE_FIXED:
+        *VAL_RC_TILT = FIXED_PITCH;
+        *VAL_RC_PITCH = RC_VAL[RCI_PITCH];
+        writeThrottlePosition(VAL_RC_THROTTLE, RC_VAL[RCI_THROTTLE], FIXED_PITCH);
+
+        // Blink based on mode
+        digitalWrite(LED_BUILTIN, HIGH);
+        break;
+      case MODE_VARIABLE:
+        *VAL_RC_TILT = RC_VAL[RCI_PITCH];
+        *VAL_RC_PITCH = 1500;
+        writeThrottlePosition(VAL_RC_THROTTLE, RC_VAL[RCI_THROTTLE], FIXED_PITCH);
+        
+        // Blink based on mode
+        digitalWrite(LED_BUILTIN, (itr & 0b00001000)?HIGH:LOW);
+        break;
+    }
+  }
+  
+  /*
   Serial.println(RC_VAL[0]);
   Serial.println(RC_VAL[1]);
   Serial.println(RC_VAL[2]);
   Serial.println();
+  */
+
+  updateWatchdog++;
+  itr++;
+  delay(35);
 }
 
 void setupInterrupts() {
@@ -86,6 +176,9 @@ void setupInterrupts() {
   // to 1..2ms pulses.
   TCCR1A = TCCR1A | _BV(COM1A1) & ~_BV(COM1A0) | _BV(COM1B1) & ~_BV(COM1B0); 
 
+  OCR1A = 0;
+  OCR1B = 0;
+
   sei();
 }
 
@@ -108,6 +201,8 @@ inline void intHandler(bool pinState, uint8_t rcIdx) {
       RC_VAL[rcIdx] = time;
     }
   }
+
+  updateWatchdog = 0;
 } 
 
 // Handle the entire pin bank 0
@@ -120,6 +215,7 @@ ISR(INT0_vect) {
   intHandler(PIND & _BV(PIND2), RCI_PITCH);
 }
 
+// Handle pin 3
 ISR(INT1_vect) {
   intHandler(PIND & _BV(PIND3), RCI_THROTTLE); 
 }
